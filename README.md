@@ -1,5 +1,5 @@
 
-# Unsuper
+# unsuper
 The fastest Android super.img dumper, made in Python.
 
 ![Version](https://img.shields.io/github/v/release/codefl0w/unsuper) ![Downloads](https://img.shields.io/github/downloads/codefl0w/unsuper/total)
@@ -15,13 +15,13 @@ The fastest Android super.img dumper, made in Python.
 
 
 # Speed
-Unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~27 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to just under 40 seconds.
+unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~27 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to just under 40 seconds.
 
 Performance may vary based on the amount of threads and disk speeds. More threads doesn't always equal to higher speeds.
 
 # Usage
 
-Unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is stated, Unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
+unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is stated, unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
 
  Extra arguements come AFTER the positional arguements.
 
@@ -46,7 +46,7 @@ For example, if you want to extract the system_a partition using 6 threads:
 
 And so on.
 
-Unsuper can also simply unsparse an image and save it to a specified directory:
+unsuper can also simply unsparse an image and save it to a specified directory:
 
     unsuper.py /path/to/super.img /output_path --unsparse
     
