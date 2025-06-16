@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Unsuper, fastest Android super.img dumper
+# unsuper, fastest Android super.img dumper
 
 import argparse
 import mmap
