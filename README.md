@@ -1,14 +1,13 @@
 
-
 # unsuper
 The fastest Android super.img dumper, made in Python.
 
-![Version](https://img.shields.io/github/v/release/codefl0w/unsuper)  ![Downloads](https://img.shields.io/github/downloads/codefl0w/unsuper/total)
+![Version](https://img.shields.io/github/v/release/codefl0w/unsuper) ![Downloads](https://img.shields.io/github/downloads/codefl0w/unsuper/total)
 
 
 ## Features
 
--  **Extremely fast** - Best in its class, see [speeds](https://github.com/codefl0w/unsuper?tab=readme-ov-file#speed) below
+-  **Extremely fast** - Best in its class, see speeds below
 - **Unsparse support** - Automatically unsparses images without any dependancies
 - **Smart extraction** - Automatically skips empty partitions
 - **Selective usage** - unsuper can extract only specific partitions or just unsparse the image
@@ -16,17 +15,13 @@ The fastest Android super.img dumper, made in Python.
 
 
 # Speed
-unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~27 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to just under 40 seconds.
+unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.0 extracts partitions up to 2.5 times faster compared to V1.0.
 
 Performance may vary based on the amount of threads and disk speeds. More threads doesn't always equal to higher speeds.
 
-# Installation
-
-unsuper can directly be used as the Python script, [downloaded as a precompiled binary](https://github.com/codefl0w/unsuper/releases/latest) on Windows and Linux, or installed globally using `pip install unsuper`.
-
 # Usage
 
-unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is specified, unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
+unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is stated, unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
 
  Extra arguements come AFTER the positional arguements.
 

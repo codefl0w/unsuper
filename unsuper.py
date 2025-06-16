@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 
-# unsuper, fastest Android super.img dumper
+#Unsuper, fastest Android super.img dumper
 
 import argparse
 import mmap
 import os
 import struct
+import shutil
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, List, Optional, Tuple
 import time
+import numpy as np
+from multiprocessing import Pool, cpu_count
 
-VERSION = 1.0
+VERSION = 2.0
 
 # Constants
 SPARSE_HEADER_MAGIC = 0xED26FF3A
@@ -85,14 +87,13 @@ class SparseChunkHeader:
         ) = struct.unpack(fmt, buffer[:required_size])
 
 class FastSparseConverter:
-    # sparse image converter
+    # Optimized sparse image converter
     
     def __init__(self, input_file: str, temp_dir: Optional[str] = None):
         self.input_file = input_file
         self.temp_dir = temp_dir
         
     def convert(self) -> str:
-        
         # Create output file in temp directory
         if self.temp_dir:
             temp_dir = Path(self.temp_dir)
@@ -109,7 +110,7 @@ class FastSparseConverter:
             output_file = str(output_file)
         
         try:
-            with open(self.input_file, 'rb') as infile, open(output_file, 'wb') as outfile:
+            with open(self.input_file, 'rb') as infile:
                 # Read and validate header
                 header_data = infile.read(SPARSE_HEADER_SIZE)
                 if len(header_data) < SPARSE_HEADER_SIZE:
@@ -130,103 +131,122 @@ class FastSparseConverter:
                 if header.blk_sz == 0:
                     raise FastDumperError("Invalid block size: 0")
                 
-                # Skip to chunk data
-                infile.seek(header.file_hdr_sz)
+                # Pre-allocate output file size for better performance
+                estimated_size = header.total_blks * header.blk_sz
                 
-                # Process chunks efficiently
-                for chunk_idx in range(header.total_chunks):
+                with open(output_file, 'wb') as outfile:
                     try:
-                        # Read chunk header with bounds checking
-                        chunk_header_data = infile.read(SPARSE_CHUNK_HEADER_SIZE)
-                        if len(chunk_header_data) < SPARSE_CHUNK_HEADER_SIZE:
-                            raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1}/{header.total_chunks} header: got {len(chunk_header_data)} bytes")
-                        
-                        chunk_header = SparseChunkHeader(chunk_header_data)
-                        
-                        # Validate chunk header
-                        if chunk_header.total_sz < header.chunk_hdr_sz:
-                            raise FastDumperError(f"Invalid chunk {chunk_idx + 1} total size: {chunk_header.total_sz} < {header.chunk_hdr_sz}")
-                        
-                        # Skip extra header data if present
-                        if header.chunk_hdr_sz > SPARSE_CHUNK_HEADER_SIZE:
-                            extra_bytes = header.chunk_hdr_sz - SPARSE_CHUNK_HEADER_SIZE
-                            skipped = infile.read(extra_bytes)
-                            if len(skipped) < extra_bytes:
-                                raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} extra header data")
-                        
-                        chunk_data_size = chunk_header.total_sz - header.chunk_hdr_sz
-                        output_size = chunk_header.chunk_sz * header.blk_sz
-                        
-                        if chunk_header.chunk_type == 0xCAC1:  # Raw data
-                            # Copy data in large chunks for better performance
-                            remaining = chunk_data_size
-                            while remaining > 0:
-                                chunk_size = min(BUFFER_SIZE, remaining)
-                                data = infile.read(chunk_size)
-                                if len(data) == 0:
-                                    raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} raw data")
-                                outfile.write(data)
-                                remaining -= len(data)
-                                
-                        elif chunk_header.chunk_type == 0xCAC2:  # Fill data
-                            if chunk_data_size < 4:
-                                raise FastDumperError(f"Incomplete fill chunk {chunk_idx + 1}: data size {chunk_data_size} < 4")
-                            
-                            fill_data = infile.read(4)
-                            if len(fill_data) < 4:
-                                raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} fill data")
-                            
-                            # Skip remaining fill chunk data if any
-                            if chunk_data_size > 4:
-                                remaining_fill = chunk_data_size - 4
-                                skipped = infile.read(remaining_fill)
-                                if len(skipped) < remaining_fill:
-                                    raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} remaining fill data")
-                            
-                            # Write fill pattern efficiently
-                            if output_size > 0:
-                                pattern = fill_data * (BUFFER_SIZE // 4)
-                                remaining = output_size
-                                while remaining > 0:
-                                    write_size = min(len(pattern), remaining)
-                                    outfile.write(pattern[:write_size])
-                                    remaining -= write_size
-                                
-                        elif chunk_header.chunk_type == 0xCAC3:  # Don't care
-                            # Skip chunk data and write zeros/seek
-                            if chunk_data_size > 0:
-                                skipped = infile.read(chunk_data_size)
-                                if len(skipped) < chunk_data_size:
-                                    raise FastDumperError(f"Unexpected EOF while skipping chunk {chunk_idx + 1} don't care data")
-                            
-                            # Seek forward in output file (creates sparse file if supported)
-                            current_pos = outfile.tell()
-                            outfile.seek(current_pos + output_size)
-                            
-                        elif chunk_header.chunk_type == 0xCAC4:  # CRC32
-                            # Skip CRC chunk data
-                            if chunk_data_size > 0:
-                                skipped = infile.read(chunk_data_size)
-                                if len(skipped) < chunk_data_size:
-                                    raise FastDumperError(f"Unexpected EOF while skipping chunk {chunk_idx + 1} CRC data")
-                            # CRC chunks don't contribute to output
-                            
-                        else:
-                            # Unknown chunk type, skip data and output
-                            print(f"Warning: Unknown chunk type 0x{chunk_header.chunk_type:04x} in chunk {chunk_idx + 1}, skipping...")
-                            if chunk_data_size > 0:
-                                skipped = infile.read(chunk_data_size)
-                                if len(skipped) < chunk_data_size:
-                                    raise FastDumperError(f"Unexpected EOF while skipping chunk {chunk_idx + 1} unknown data")
-                            
-                            # Seek forward in output
-                            current_pos = outfile.tell()
-                            outfile.seek(current_pos + output_size)
+                        # Pre-allocate file
+                        if estimated_size > 0:
+                            outfile.seek(estimated_size - 1)
+                            outfile.write(b'\0')
+                            outfile.seek(0)
+                    except:
+                        # Fall back if pre-allocation fails
+                        pass
                     
-                    except FastDumperError:
-                        raise
-                    except Exception as e:
-                        raise FastDumperError(f"Error processing chunk {chunk_idx + 1}: {e}")
+                    # Skip to chunk data
+                    infile.seek(header.file_hdr_sz)
+                    
+                    # Pre-allocate buffer for better performance
+                    buffer = bytearray(BUFFER_SIZE)
+                    
+                    # Process chunks efficiently
+                    for chunk_idx in range(header.total_chunks):
+                        try:
+                            # Read chunk header with bounds checking
+                            chunk_header_data = infile.read(SPARSE_CHUNK_HEADER_SIZE)
+                            if len(chunk_header_data) < SPARSE_CHUNK_HEADER_SIZE:
+                                raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1}/{header.total_chunks} header: got {len(chunk_header_data)} bytes")
+                            
+                            chunk_header = SparseChunkHeader(chunk_header_data)
+                            
+                            # Validate chunk header
+                            if chunk_header.total_sz < header.chunk_hdr_sz:
+                                raise FastDumperError(f"Invalid chunk {chunk_idx + 1} total size: {chunk_header.total_sz} < {header.chunk_hdr_sz}")
+                            
+                            # Skip extra header data if present
+                            if header.chunk_hdr_sz > SPARSE_CHUNK_HEADER_SIZE:
+                                extra_bytes = header.chunk_hdr_sz - SPARSE_CHUNK_HEADER_SIZE
+                                infile.seek(infile.tell() + extra_bytes)  
+                            
+                            chunk_data_size = chunk_header.total_sz - header.chunk_hdr_sz
+                            output_size = chunk_header.chunk_sz * header.blk_sz
+                            
+                            if chunk_header.chunk_type == 0xCAC1:  # Raw data
+                                # Copy data using readinto for better performance
+                                remaining = chunk_data_size
+                                while remaining > 0:
+                                    chunk_size = min(len(buffer), remaining)
+                                    bytes_read = infile.readinto(memoryview(buffer)[:chunk_size])
+                                    if not bytes_read:
+                                        raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} raw data")
+                                    outfile.write(memoryview(buffer)[:bytes_read])
+                                    remaining -= bytes_read
+                                    
+                            elif chunk_header.chunk_type == 0xCAC2:  # Fill data
+                                if chunk_data_size < 4:
+                                    raise FastDumperError(f"Incomplete fill chunk {chunk_idx + 1}: data size {chunk_data_size} < 4")
+                                
+                                fill_data = infile.read(4)
+                                if len(fill_data) < 4:
+                                    raise FastDumperError(f"Unexpected EOF while reading chunk {chunk_idx + 1} fill data")
+                                
+                                # Skip remaining fill chunk data if any
+                                if chunk_data_size > 4:
+                                    remaining_fill = chunk_data_size - 4
+                                    infile.seek(infile.tell() + remaining_fill)  
+                                
+                                # Vectorized fill pattern generation using numpy
+                                if output_size > 0:
+                                    fill_value = struct.unpack('<I', fill_data)[0]
+                                    # Create large chunks at once using numpy
+                                    chunk_size = min(64 * 1024 * 1024, output_size)  # 64MB chunks
+                                    remaining = output_size
+                                    
+                                    while remaining > 0:
+                                        write_size = min(chunk_size, remaining)
+                                        # Use numpy for fast pattern generation
+                                        num_elements = write_size // 4
+                                        if num_elements > 0:
+                                            pattern_array = np.full(num_elements, fill_value, dtype=np.uint32)
+                                            outfile.write(pattern_array.tobytes())
+                                            remaining -= num_elements * 4
+                                        
+                                        # Handle remaining bytes
+                                        if remaining > 0 and remaining < 4:
+                                            outfile.write(fill_data[:remaining])
+                                            remaining = 0
+                                    
+                            elif chunk_header.chunk_type == 0xCAC3:  # Don't care
+                                # Skip chunk data and write zeros/seek
+                                if chunk_data_size > 0:
+                                    infile.seek(infile.tell() + chunk_data_size)  
+                                
+                                # Seek forward in output file (creates sparse file if supported)
+                                current_pos = outfile.tell()
+                                outfile.seek(current_pos + output_size)
+                                
+                            elif chunk_header.chunk_type == 0xCAC4:  # CRC32
+                                # Skip CRC chunk data
+                                if chunk_data_size > 0:
+                                    infile.seek(infile.tell() + chunk_data_size)  
+                                # CRC chunks don't contribute to output
+                                
+                            else:
+                                # Unknown chunk type, skip data and output
+                                print(f"Warning: Unknown chunk type 0x{chunk_header.chunk_type:04x} in chunk {chunk_idx + 1}, skipping...")
+                                if chunk_data_size > 0:
+                                    infile.seek(infile.tell() + chunk_data_size)  
+                                
+                                # Seek forward in output
+                                current_pos = outfile.tell()
+                                outfile.seek(current_pos + output_size)
+                        
+                        except FastDumperError:
+                            raise
+                        except Exception as e:
+                            raise FastDumperError(f"Error processing chunk {chunk_idx + 1}: {e}")
         
         except Exception as e:
             # Clean up partial output file on error
@@ -240,7 +260,7 @@ class FastSparseConverter:
         return output_file
 
 class FastMetadataParser:
-    # Optimized metadata parser
+    # Optimized metadata parser with batch processing
     
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -255,215 +275,193 @@ class FastMetadataParser:
                 return self._parse_with_mmap(mm, partition_names)
     
     def _parse_with_mmap(self, mm: mmap.mmap, partition_names: Optional[List[str]]) -> List[PartitionInfo]:
-            # Parse metadata using memory mapping
+        # Parse metadata using memory mapping with batch processing
+        
+        # Check minimum file size
+        if len(mm) < LP_PARTITION_RESERVED_BYTES + 40:
+            raise FastDumperError("File too small to contain valid metadata")
+        
+        # Read geometry
+        mm.seek(LP_PARTITION_RESERVED_BYTES)
+        geometry_data = mm.read(44)  # Read enough for all geometry fields
+        if len(geometry_data) < 44:
+            raise FastDumperError("Cannot read geometry data")
+        
+        magic, struct_size = struct.unpack('<2I', geometry_data[:8])
+        
+        if magic != LP_METADATA_GEOMETRY_MAGIC:
+            raise FastDumperError(f"Invalid geometry magic: 0x{magic:08x}")
+        
+        metadata_max_size, metadata_slot_count, logical_block_size = struct.unpack(
+            '<3I', geometry_data[32:44]
+        )
+        
+        # Validate geometry values
+        if metadata_max_size == 0 or metadata_slot_count == 0:
+            raise FastDumperError("Invalid metadata geometry")
+        
+        # Calculate header offset
+        base_offset = LP_PARTITION_RESERVED_BYTES + (LP_METADATA_GEOMETRY_SIZE * 2)
+        header_offset = base_offset
+        
+        # Check if we have enough space for metadata
+        if header_offset + 128 > len(mm):
+            raise FastDumperError("File too small for metadata header")
+        
+        # Read metadata header
+        mm.seek(header_offset)
+        header_data = mm.read(128)  # Read enough for header + table descriptors
+        if len(header_data) < 128:
+            raise FastDumperError("Cannot read metadata header")
+        
+        magic = struct.unpack('<I', header_data[:4])[0]
+        if magic != LP_METADATA_HEADER_MAGIC:
+            # Try backup header
+            backup_offset = base_offset + metadata_max_size * metadata_slot_count
+            if backup_offset + 128 > len(mm):
+                raise FastDumperError("File too small for backup metadata header")
             
-            # Check minimum file size
-            if len(mm) < LP_PARTITION_RESERVED_BYTES + 40:
-                raise FastDumperError("File too small to contain valid metadata")
-            
-            # Read geometry
-            mm.seek(LP_PARTITION_RESERVED_BYTES)
-            geometry_data = mm.read(40)  # Only read what we need
-            if len(geometry_data) < 40:
-                raise FastDumperError("Cannot read geometry data")
-            
-            magic, struct_size = struct.unpack('<2I', geometry_data[:8])
-            
-            if magic != LP_METADATA_GEOMETRY_MAGIC:
-                raise FastDumperError(f"Invalid geometry magic: 0x{magic:08x}")
-            
-            # Read remaining geometry fields
-            if len(geometry_data) < 44:
-                mm.seek(LP_PARTITION_RESERVED_BYTES + 32)
-                extra_data = mm.read(12)
-                if len(extra_data) < 12:
-                    raise FastDumperError("Cannot read complete geometry data")
-                geometry_data = geometry_data[:32] + extra_data
-            
-            metadata_max_size, metadata_slot_count, logical_block_size = struct.unpack(
-                '<3I', geometry_data[32:44]
-            )
-            
-            # Validate geometry values
-            if metadata_max_size == 0 or metadata_slot_count == 0:
-                raise FastDumperError("Invalid metadata geometry")
-            
-            # Calculate header offset
-            base_offset = LP_PARTITION_RESERVED_BYTES + (LP_METADATA_GEOMETRY_SIZE * 2)
-            header_offset = base_offset
-            
-            # Check if we have enough space for metadata
-            if header_offset + 128 > len(mm):
-                raise FastDumperError("File too small for metadata header")
-            
-            # Read metadata header
-            mm.seek(header_offset)
-            header_data = mm.read(128)  # Read enough for header + table descriptors
+            mm.seek(backup_offset)
+            header_data = mm.read(128)
             if len(header_data) < 128:
-                raise FastDumperError("Cannot read metadata header")
+                raise FastDumperError("Cannot read backup metadata header")
             
             magic = struct.unpack('<I', header_data[:4])[0]
             if magic != LP_METADATA_HEADER_MAGIC:
-                # Try backup header
-                backup_offset = base_offset + metadata_max_size * metadata_slot_count
-                if backup_offset + 128 > len(mm):
-                    raise FastDumperError("File too small for backup metadata header")
-                
-                mm.seek(backup_offset)
-                header_data = mm.read(128)
-                if len(header_data) < 128:
-                    raise FastDumperError("Cannot read backup metadata header")
-                
-                magic = struct.unpack('<I', header_data[:4])[0]
-                if magic != LP_METADATA_HEADER_MAGIC:
-                    raise FastDumperError(f"Invalid metadata header magic: 0x{magic:08x}")
-                header_offset = backup_offset
-            
-            # Parse header and table descriptors
-            header_size, tables_size = struct.unpack('<2I', header_data[8:16])
-            
-            if header_size < 80 or tables_size == 0:
-                raise FastDumperError("Invalid metadata header values")
-            
-            # Parse table descriptors (starting at offset 80 in header)
-            tables_start = header_offset + header_size
-            
-            # Check bounds for table descriptors
-            if len(header_data) < 104:
-                raise FastDumperError("Header too small for table descriptors")
-            
-            # Partition table descriptor
-            part_offset, part_count, part_entry_size = struct.unpack('<3I', header_data[80:92])
-            
-            # Extent table descriptor  
-            extent_offset, extent_count, extent_entry_size = struct.unpack('<3I', header_data[92:104])
-            
-            # Validate table parameters
-            if part_entry_size < 52 or extent_entry_size < 24:
-                raise FastDumperError("Invalid table entry sizes")
-            
-            # Check bounds for partition table
-            part_table_start = tables_start + part_offset
-            part_table_size = part_count * part_entry_size
-            if part_table_start + part_table_size > len(mm):
-                raise FastDumperError("Partition table extends beyond file")
-            
-            # Check bounds for extent table
-            extent_table_start = tables_start + extent_offset
-            extent_table_size = extent_count * extent_entry_size
-            if extent_table_start + extent_table_size > len(mm):
-                raise FastDumperError("Extent table extends beyond file")
-            
-            # Read partition table
-            mm.seek(part_table_start)
-            partitions_data = mm.read(part_table_size)
-            if len(partitions_data) < part_table_size:
-                raise FastDumperError("Cannot read complete partition table")
-            
-            # Read extent table
-            mm.seek(extent_table_start)
-            extents_data = mm.read(extent_table_size)
-            if len(extents_data) < extent_table_size:
-                raise FastDumperError("Cannot read complete extent table")
-            
-            # Parse partitions and extents efficiently
-            partitions = []
-            
-            for i in range(part_count):
-                part_start = i * part_entry_size
-                part_data = partitions_data[part_start:part_start + part_entry_size]
-                
-                if len(part_data) < 52:
-                    continue  # Skip malformed entries
-                
-                # Parse partition entry
-                name_bytes = part_data[:36]
-                name = name_bytes.decode('utf-8').strip('\x00')
-                
-                # Skip empty partition names
-                if not name:
-                    continue
-                
-                # Skip if not in requested partitions
-                if partition_names and name not in partition_names:
-                    continue
-                
-                attributes, first_extent_idx, num_extents = struct.unpack(
-                    '<3I', part_data[36:48]
-                )
-                
+                raise FastDumperError(f"Invalid metadata header magic: 0x{magic:08x}")
+            header_offset = backup_offset
+        
+        # Parse header and table descriptors
+        header_size, tables_size = struct.unpack('<2I', header_data[8:16])
+        
+        if header_size < 80 or tables_size == 0:
+            raise FastDumperError("Invalid metadata header values")
+        
+        # Parse table descriptors (starting at offset 80 in header)
+        tables_start = header_offset + header_size
+        
+        # Check bounds for table descriptors
+        if len(header_data) < 104:
+            raise FastDumperError("Header too small for table descriptors")
+        
+        # Partition table descriptor
+        part_offset, part_count, part_entry_size = struct.unpack('<3I', header_data[80:92])
+        
+        # Extent table descriptor  
+        extent_offset, extent_count, extent_entry_size = struct.unpack('<3I', header_data[92:104])
+        
+        # Validate table parameters
+        if part_entry_size < 52 or extent_entry_size < 24:
+            raise FastDumperError("Invalid table entry sizes")
+        
+        # Check bounds for partition table
+        part_table_start = tables_start + part_offset
+        part_table_size = part_count * part_entry_size
+        if part_table_start + part_table_size > len(mm):
+            raise FastDumperError("Partition table extends beyond file")
+        
+        # Check bounds for extent table
+        extent_table_start = tables_start + extent_offset
+        extent_table_size = extent_count * extent_entry_size
+        if extent_table_start + extent_table_size > len(mm):
+            raise FastDumperError("Extent table extends beyond file")
+        
+        # Read partition table
+        mm.seek(part_table_start)
+        partitions_data = mm.read(part_table_size)
+        if len(partitions_data) < part_table_size:
+            raise FastDumperError("Cannot read complete partition table")
+        
+        # Read extent table
+        mm.seek(extent_table_start)
+        extents_data = mm.read(extent_table_size)
+        if len(extents_data) < extent_table_size:
+            raise FastDumperError("Cannot read complete extent table")
+        
+        # Batch unpack all partition entries at once
+        partitions = []
+        partition_fmt = '<36s3I'  # name(36) + attributes(4) + first_extent(4) + num_extents(4)
+        partition_struct_size = struct.calcsize(partition_fmt)
+        
+        # Calculate how many complete partition entries we can unpack
+        max_partitions = min(part_count, len(partitions_data) // partition_struct_size)
+        
+        # Unpack all partitions in batches
+        partition_structs = []
+        for i in range(max_partitions):
+            start_idx = i * part_entry_size
+            # Only unpack the fields we need
+            entry_data = partitions_data[start_idx:start_idx + partition_struct_size]
+            if len(entry_data) >= partition_struct_size:
+                partition_structs.append(struct.unpack(partition_fmt, entry_data))
+        
+        # Similarly for extents - batch unpack
+        extent_fmt = '<QIQ'  # num_sectors(8) + target_type(4) + target_data(8)
+        extent_struct_size = struct.calcsize(extent_fmt)
+        max_extents = min(extent_count, len(extents_data) // extent_struct_size)
+        
+        extent_structs = []
+        for i in range(max_extents):
+            start_idx = i * extent_entry_size
+            entry_data = extents_data[start_idx:start_idx + extent_struct_size]
+            if len(entry_data) >= extent_struct_size:
+                extent_structs.append(struct.unpack(extent_fmt, entry_data))
+        
+        # Process partitions with batch-loaded data
+        for name_bytes, attributes, first_extent_idx, num_extents in partition_structs:
+            name = name_bytes.decode('utf-8').strip('\x00')
+
                 # Check for various empty partition conditions
-                if num_extents == 0:
-                    print(f"Warning: Partition {name} has no extents, skipping...")
-                    continue
-                
-                # Validate extent indices
-                if first_extent_idx >= extent_count or first_extent_idx + num_extents > extent_count:
-                    print(f"Warning: Invalid extent indices for partition {name}, skipping...")
-                    continue
-                
-                # Parse extents for this partition
-                extents = []
-                total_size = 0
-                skipped_extents = 0
-                
-                for j in range(num_extents):
-                    extent_idx = first_extent_idx + j
-                    extent_start = extent_idx * extent_entry_size
-                    extent_data = extents_data[extent_start:extent_start + extent_entry_size]
-                    
-                    if len(extent_data) < 24:
-                        skipped_extents += 1
-                        continue  # Skip malformed extents
-                    
-                    num_sectors, target_type, target_data = struct.unpack(
-                        '<QIQ', extent_data[:20]
-                    )
-                    
-                    if target_type != LP_TARGET_TYPE_LINEAR:
-                        skipped_extents += 1
-                        continue
-                    
-                    offset = target_data * LP_SECTOR_SIZE
-                    size = num_sectors * LP_SECTOR_SIZE
-                    
-                    # Validate extent bounds
-                    if offset + size > len(mm):
-                        print(f"Warning: Extent for {name} extends beyond file, truncating...")
-                        size = max(0, len(mm) - offset)
-                    
-                    if size > 0:
-                        extents.append(ExtentInfo(offset, size))
-                        total_size += size
-                    else:
-                        skipped_extents += 1
-                
-                # Check if partition ended up empty after processing extents
-                if not extents:
-                    if skipped_extents > 0:
-                        print(f"Warning: Partition {name} has no valid extents (skipped {skipped_extents} invalid extents), skipping...")
-                    else:
-                        print(f"Warning: Partition {name} has zero-sized extents, skipping...")
-                    continue
-                
-                # Only add partitions with valid extents
-                partitions.append(PartitionInfo(name, extents, total_size))
+           
             
-            return partitions
+            if not name or (partition_names and name not in partition_names):
+                continue
+                
+            if num_extents == 0 or first_extent_idx >= len(extent_structs):
+                print(f"Warning: Partition {name} has no extents, skipping...")
+                continue
+            
+            # Process extents for this partition
+            extents = []
+            total_size = 0
+            
+            for j in range(num_extents):
+                extent_idx = first_extent_idx + j
+                if extent_idx >= len(extent_structs):
+                    break
+                    
+                num_sectors, target_type, target_data = extent_structs[extent_idx]
+                
+                if target_type != LP_TARGET_TYPE_LINEAR:
+                    continue
+                
+                offset = target_data * LP_SECTOR_SIZE
+                size = num_sectors * LP_SECTOR_SIZE
+                
+                # Validate extent bounds
+                if offset + size <= len(mm) and size > 0:
+                    extents.append(ExtentInfo(offset, size))
+                    total_size += size
+            
+            if extents:
+                partitions.append(PartitionInfo(name, extents, total_size))
+        
+        return partitions
 
 class FastExtractor:
-    # High-performance partition extractor
+    # High-performance partition extractor with multiprocessing
     
-    def __init__(self, input_file: str, output_dir: str, max_workers: int = 4):
+    def __init__(self, input_file: str, output_dir: str, max_workers: int = None):
         self.input_file = input_file
         self.output_dir = Path(output_dir)
-        self.max_workers = max_workers
+        # Use more workers for I/O bound operations, but cap at reasonable limit
+        self.max_workers = max_workers or min(cpu_count() * 2, 16)
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def extract_partition(self, partition: PartitionInfo) -> Tuple[str, float]:
-        # Extract a single partition
+        # Extract a single partition with optimized I/O
         start_time = time.time()
         output_file = self.output_dir / f"{partition.name}.img"
         
@@ -472,9 +470,9 @@ class FastExtractor:
                 # Use memory mapping for input file if it's large
                 if os.path.getsize(self.input_file) > 100 * 1024 * 1024:  # 100MB threshold
                     with mmap.mmap(infile.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        self._extract_with_mmap(mm, outfile, partition)
+                        self._extract_with_mmap_optimized(mm, outfile, partition)
                 else:
-                    self._extract_with_seek(infile, outfile, partition)
+                    self._extract_with_readinto(infile, outfile, partition)
         except Exception as e:
             # Clean up partial output file on error
             if output_file.exists():
@@ -484,27 +482,29 @@ class FastExtractor:
         elapsed = time.time() - start_time
         return partition.name, elapsed
     
-    def _extract_with_mmap(self, mm: mmap.mmap, outfile: BinaryIO, partition: PartitionInfo):
-        # Extract using memory mapping
+    def _extract_with_mmap_optimized(self, mm: mmap.mmap, outfile: BinaryIO, partition: PartitionInfo):
+        # Optimized memory-mapped extraction with direct memory copying
+        buffer = bytearray(BUFFER_SIZE)
+        
         for extent in partition.extents:
-            # Validate extent bounds
             if extent.offset >= len(mm):
                 continue
             
-            mm.seek(extent.offset)
             remaining = min(extent.size, len(mm) - extent.offset)
+            offset = extent.offset
             
             while remaining > 0:
-                chunk_size = min(BUFFER_SIZE, remaining)
-                data = mm.read(chunk_size)
-                if not data:
-                    break
-                outfile.write(data)
-                remaining -= len(data)
+                chunk_size = min(len(buffer), remaining)
+                # Direct memory copy from mmap
+                buffer[:chunk_size] = mm[offset:offset + chunk_size]
+                outfile.write(memoryview(buffer)[:chunk_size])
+                offset += chunk_size
+                remaining -= chunk_size
     
-    def _extract_with_seek(self, infile: BinaryIO, outfile: BinaryIO, partition: PartitionInfo):
-        # Extract using classic file operations
+    def _extract_with_readinto(self, infile: BinaryIO, outfile: BinaryIO, partition: PartitionInfo):
+        # Extract using readinto for better performance
         file_size = os.path.getsize(self.input_file)
+        buffer = bytearray(BUFFER_SIZE)
         
         for extent in partition.extents:
             # Validate extent bounds
@@ -515,52 +515,76 @@ class FastExtractor:
             remaining = min(extent.size, file_size - extent.offset)
             
             while remaining > 0:
-                chunk_size = min(BUFFER_SIZE, remaining)
-                data = infile.read(chunk_size)
-                if not data:
+                chunk_size = min(len(buffer), remaining)
+                bytes_read = infile.readinto(memoryview(buffer)[:chunk_size])
+                if not bytes_read:
                     break
-                outfile.write(data)
-                remaining -= len(data)
+                outfile.write(memoryview(buffer)[:bytes_read])
+                remaining -= bytes_read
     
     def extract_all(self, partitions: List[PartitionInfo], show_progress: bool = True) -> None:
-        # Extract all partitions in parallel
+        # Extract all partitions using multiprocessing for much better performance
         
         if show_progress:
             print(f"Extracting {len(partitions)} partitions using {self.max_workers} threads...")
         
-        # Use thread pool for parallel extraction
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all extraction tasks
-            future_to_partition = {
-                executor.submit(self.extract_partition, partition): partition 
-                for partition in partitions
-            }
+        # Use multiprocessing for CPU-intensive operations
+        with Pool(processes=self.max_workers) as pool:
+            # Create args for each partition
+            args_list = [(self.input_file, self.output_dir, partition) for partition in partitions]
             
-            # Process completed tasks
-            completed = 0
-            total_time = 0
+            # Use starmap for parallel processing
+            results = pool.starmap(self._extract_partition_static, args_list)
             
-            for future in as_completed(future_to_partition):
-                partition = future_to_partition[future]
-                
-                try:
-                    name, elapsed = future.result()
-                    completed += 1
-                    total_time += elapsed
-                    
-                    if show_progress:
-                        size_mb = partition.total_size / (1024 * 1024)
-                        speed_mb = size_mb / elapsed if elapsed > 0 else 0
-                        print(f"[{completed}/{len(partitions)}] {name}: "
-                              f"{size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
-                        
-                except Exception as e:
-                    print(f"Error extracting {partition.name}: {e}")
+            if show_progress:
+                for i, (name, elapsed) in enumerate(results, 1):
+                    partition = next(p for p in partitions if p.name == name)
+                    size_mb = partition.total_size / (1024 * 1024)
+                    speed_mb = size_mb / elapsed if elapsed > 0 else 0
+                    print(f"[{i}/{len(partitions)}] {name}: "
+                          f"{size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
         
         if show_progress and len(partitions) > 1:
+            total_time = sum(elapsed for _, elapsed in results)
             avg_time = total_time / len(partitions)
             print(f"\nCompleted! Average extraction time: {avg_time:.2f}s per partition")
             print(f"Total extraction time: {total_time:.2f}s")
+    
+    @staticmethod
+    def _extract_partition_static(input_file: str, output_dir: Path, partition: PartitionInfo) -> Tuple[str, float]:
+        # Static method for multiprocessing
+
+        start_time = time.time()
+        output_file = output_dir / f"{partition.name}.img"
+        
+        try:
+            with open(input_file, 'rb') as infile, open(output_file, 'wb') as outfile:
+                # Use larger buffer and readinto for better performance
+                buffer = bytearray(BUFFER_SIZE)
+                file_size = os.path.getsize(input_file)
+                
+                for extent in partition.extents:
+                    if extent.offset >= file_size:
+                        continue
+                        
+                    infile.seek(extent.offset)
+                    remaining = min(extent.size, file_size - extent.offset)
+                    
+                    while remaining > 0:
+                        chunk_size = min(len(buffer), remaining)
+                        bytes_read = infile.readinto(memoryview(buffer)[:chunk_size])
+                        if not bytes_read:
+                            break
+                        outfile.write(memoryview(buffer)[:bytes_read])
+                        remaining -= bytes_read
+                        
+        except Exception as e:
+            if output_file.exists():
+                output_file.unlink()
+            raise FastDumperError(f"Failed to extract {partition.name}: {e}")
+        
+        elapsed = time.time() - start_time
+        return partition.name, elapsed
 
 
 def main():
@@ -572,7 +596,7 @@ def main():
  \___/|_| |_|___/\__,_| .__/ \___|_|   
                       |_|              
    Fastest super.img dumper ever
-    
+         
      """
 
     parser = argparse.ArgumentParser(
@@ -675,7 +699,6 @@ def main():
                 
                 # Move/rename to desired location if needed
                 if converted_file != str(unsparse_output):
-                    import shutil
                     shutil.move(converted_file, unsparse_output)
                 
                 # Use the unsparsed file for further processing
@@ -699,7 +722,7 @@ def main():
             output_path.mkdir(parents=True, exist_ok=True)
             unsparse_output = output_path / f"{Path(args.super_image).stem}.unsparse.img"
             
-            import shutil
+
             shutil.copy2(args.super_image, unsparse_output)
             
             # Use the copied file for further processing

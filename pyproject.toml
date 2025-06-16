@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unsuper"
-version = "1.0"
+version = "2.0"
 description = "The fastest Android super.img dumper, made in Python."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-  {name = "fl0w", email = "fl0w_dev@protonmail.com"}
+  {name = "fl0w", email = "flow_dev@protonmail.com"}
 ]
 requires-python = ">=3.6"
 
