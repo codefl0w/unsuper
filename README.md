@@ -1,4 +1,5 @@
 
+
 # unsuper
 The fastest Android super.img dumper, made in Python.
 
@@ -18,6 +19,10 @@ The fastest Android super.img dumper, made in Python.
 unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~27 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to just under 40 seconds.
 
 Performance may vary based on the amount of threads and disk speeds. More threads doesn't always equal to higher speeds.
+
+# Installation
+
+unsuper can directly be used as the Python script, [downloaded as a precompiled binary](https://github.com/codefl0w/unsuper/releases/latest) on Windows and Linux, or installed globally using `pip install unsuper`.
 
 # Usage
 
