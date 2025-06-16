@@ -10,7 +10,7 @@ The fastest Android super.img dumper, made in Python.
 -  **Extremely fast** - Best in its class, see speeds below
 - **Unsparse support** - Automatically unsparses images without any dependancies
 - **Smart extraction** - Automatically skips empty partitions
-- **Selective usage** - Unsuper can extract only specific partitions or just unsparse the image
+- **Selective usage** - unsuper can extract only specific partitions or just unsparse the image
 
 
 
