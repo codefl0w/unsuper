@@ -26,7 +26,7 @@ unsuper can directly be used as the Python script, [downloaded as a precompiled 
 
 # Usage
 
-unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is stated, unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
+unsuper's usage is extremely easy: just state the path to your super.img and start. If no output directory is specified, unsuper will create an "extracted_partitions" folder under your home directory and use it as default.
 
  Extra arguements come AFTER the positional arguements.
 
