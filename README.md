@@ -1,4 +1,5 @@
 
+
 # unsuper
 The fastest Android super.img dumper, made in Python.
 
@@ -12,7 +13,11 @@ The fastest Android super.img dumper, made in Python.
 - **Smart extraction** - Automatically skips empty partitions
 - **Selective usage** - unsuper can extract only specific partitions or just unsparse the image
 
-
+# Installation
+Download the script, or clone into the repository if you want to contribute / fork.
+Download and install [Python](https://www.python.org/downloads/) (3.6 and later) and add it to PATH.
+Install the numpy module using `pip install numpy`.
+Follow [Usage](https://github.com/codefl0w/unsuper?tab=readme-ov-file#usage).
 
 # Speed
 unsuper can can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.0 extracts partitions up to 2.5 times faster compared to V1.0.

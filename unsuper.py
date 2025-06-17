@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import BinaryIO, List, Optional, Tuple
 import time
 import numpy as np
+import multiprocessing
 from multiprocessing import Pool, cpu_count
 
 VERSION = 2.0
@@ -449,7 +450,7 @@ class FastMetadataParser:
         return partitions
 
 class FastExtractor:
-    # High-performance partition extractor with multiprocessing
+    # High-performance partition extractor - multiprocessing moved to module level
     
     def __init__(self, input_file: str, output_dir: str, max_workers: int = None):
         self.input_file = input_file
@@ -523,71 +524,79 @@ class FastExtractor:
                 remaining -= bytes_read
     
     def extract_all(self, partitions: List[PartitionInfo], show_progress: bool = True) -> None:
-        # Extract all partitions using multiprocessing for much better performance
+        # Extract all partitions - delegate to module-level function for multiprocessing
+        extract_all_partitions(self.input_file, self.output_dir, partitions, self.max_workers, show_progress)
+
+
+def _extract_partition_worker(input_file: str, output_dir: Path, partition: PartitionInfo) -> Tuple[str, float]:
+    """Worker function for multiprocessing - EXACT copy of original _extract_partition_static"""
+    start_time = time.time()
+    output_file = output_dir / f"{partition.name}.img"
+    
+    try:
+        with open(input_file, 'rb') as infile, open(output_file, 'wb') as outfile:
+            # Use larger buffer and readinto for better performance
+            buffer = bytearray(BUFFER_SIZE)
+            file_size = os.path.getsize(input_file)
+            
+            for extent in partition.extents:
+                if extent.offset >= file_size:
+                    continue
+                    
+                infile.seek(extent.offset)
+                remaining = min(extent.size, file_size - extent.offset)
+                
+                while remaining > 0:
+                    chunk_size = min(len(buffer), remaining)
+                    bytes_read = infile.readinto(memoryview(buffer)[:chunk_size])
+                    if not bytes_read:
+                        break
+                    outfile.write(memoryview(buffer)[:bytes_read])
+                    remaining -= bytes_read
+                        
+    except Exception as e:
+        if output_file.exists():
+            output_file.unlink()
+        raise FastDumperError(f"Failed to extract {partition.name}: {e}")
+    
+    elapsed = time.time() - start_time
+    return partition.name, elapsed
+
+
+def extract_all_partitions(input_file: str, output_dir: Path, partitions: List[PartitionInfo], 
+                          max_workers: int, show_progress: bool = True) -> None:
+    """Extract all partitions using multiprocessing - must be at module level"""
+    
+    if show_progress:
+        print(f"Extracting {len(partitions)} partitions using {max_workers} threads...")
+    
+    # Use multiprocessing for CPU-intensive operations
+    with Pool(processes=max_workers) as pool:
+        # Create args for each partition
+        args_list = [(input_file, output_dir, partition) for partition in partitions]
+        
+        # Use starmap for parallel processing
+        results = pool.starmap(_extract_partition_worker, args_list)
         
         if show_progress:
-            print(f"Extracting {len(partitions)} partitions using {self.max_workers} threads...")
-        
-        # Use multiprocessing for CPU-intensive operations
-        with Pool(processes=self.max_workers) as pool:
-            # Create args for each partition
-            args_list = [(self.input_file, self.output_dir, partition) for partition in partitions]
-            
-            # Use starmap for parallel processing
-            results = pool.starmap(self._extract_partition_static, args_list)
-            
-            if show_progress:
-                for i, (name, elapsed) in enumerate(results, 1):
-                    partition = next(p for p in partitions if p.name == name)
-                    size_mb = partition.total_size / (1024 * 1024)
-                    speed_mb = size_mb / elapsed if elapsed > 0 else 0
-                    print(f"[{i}/{len(partitions)}] {name}: "
-                          f"{size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
-        
-        if show_progress and len(partitions) > 1:
-            total_time = sum(elapsed for _, elapsed in results)
-            avg_time = total_time / len(partitions)
-            print(f"\nCompleted! Average extraction time: {avg_time:.2f}s per partition")
-            print(f"Total extraction time: {total_time:.2f}s")
+            for i, (name, elapsed) in enumerate(results, 1):
+                partition = next(p for p in partitions if p.name == name)
+                size_mb = partition.total_size / (1024 * 1024)
+                speed_mb = size_mb / elapsed if elapsed > 0 else 0
+                print(f"[{i}/{len(partitions)}] {name}: "
+                      f"{size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
     
-    @staticmethod
-    def _extract_partition_static(input_file: str, output_dir: Path, partition: PartitionInfo) -> Tuple[str, float]:
-        # Static method for multiprocessing
-
-        start_time = time.time()
-        output_file = output_dir / f"{partition.name}.img"
-        
-        try:
-            with open(input_file, 'rb') as infile, open(output_file, 'wb') as outfile:
-                # Use larger buffer and readinto for better performance
-                buffer = bytearray(BUFFER_SIZE)
-                file_size = os.path.getsize(input_file)
-                
-                for extent in partition.extents:
-                    if extent.offset >= file_size:
-                        continue
-                        
-                    infile.seek(extent.offset)
-                    remaining = min(extent.size, file_size - extent.offset)
-                    
-                    while remaining > 0:
-                        chunk_size = min(len(buffer), remaining)
-                        bytes_read = infile.readinto(memoryview(buffer)[:chunk_size])
-                        if not bytes_read:
-                            break
-                        outfile.write(memoryview(buffer)[:bytes_read])
-                        remaining -= bytes_read
-                        
-        except Exception as e:
-            if output_file.exists():
-                output_file.unlink()
-            raise FastDumperError(f"Failed to extract {partition.name}: {e}")
-        
-        elapsed = time.time() - start_time
-        return partition.name, elapsed
+    if show_progress and len(partitions) > 1:
+        total_time = sum(elapsed for _, elapsed in results)
+        avg_time = total_time / len(partitions)
+        print(f"\nCompleted! Average extraction time: {avg_time:.2f}s per partition")
+        print(f"Total extraction time: {total_time:.2f}s")
 
 
 def main():
+    if __name__ != "__main__":
+        return
+
     ascii = r"""
                                        
  /\ /\ _ __  ___ _   _ _ __   ___ _ __ 
@@ -795,4 +804,6 @@ def main():
                 print(f"Warning: Could not remove temporary file {unsparse_file}: {e}")
 
 if __name__ == "__main__":
+
+    multiprocessing.freeze_support()
     main()
