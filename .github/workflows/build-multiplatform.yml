@@ -24,7 +24,7 @@ jobs:
 
       - name: Build Windows executable
         run: |
-          pyinstaller --onefile --hidden-import=numpy --collect-submodules numpy --collect-all numpy unsuper.py
+          pyinstaller --onefile --hide-console hide-eary --hidden-import=numpy --collect-submodules numpy --collect-all numpy unsuper.py
           mv dist/unsuper.exe dist/unsuper_windows.exe
 
       - name: Create GitHub Release
@@ -35,14 +35,14 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Upload Windows binary
         uses: softprops/action-gh-release@v1
         with:
           files: dist/unsuper_windows.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   build-linux:
     runs-on: ubuntu-latest
@@ -70,7 +70,7 @@ jobs:
         with:
           files: dist/unsuper_linux
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   build-macos:
     runs-on: macos-latest
@@ -98,4 +98,4 @@ jobs:
         with:
           files: dist/unsuper_macos
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
