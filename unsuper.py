@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
-#Unsuper, fastest Android super.img dumper
+# Unsuper, fastest Android super.img dumper
+# Made by fl0w
+# https://github.com/codefl0w
 
 import argparse
 import mmap
@@ -17,7 +19,7 @@ import numpy as np
 import multiprocessing
 from multiprocessing import Pool, cpu_count
 
-VERSION = 2.0
+VERSION = "2.0.2"
 
 # Constants
 SPARSE_HEADER_MAGIC = 0xED26FF3A
@@ -594,8 +596,6 @@ def extract_all_partitions(input_file: str, output_dir: Path, partitions: List[P
 
 
 def main():
-    if __name__ != "__main__":
-        return
 
     ascii = r"""
                                        
