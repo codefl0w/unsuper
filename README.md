@@ -24,7 +24,7 @@ Install the numpy module using `pip install numpy`.
 Follow [Usage](https://github.com/codefl0w/unsuper?tab=readme-ov-file#usage).
 
 # Speed
-unsuper can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.0 extracts partitions up to 2.5 times faster compared to V1.0.
+unsuper can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.x extracts partitions up to 2.5x faster compared to V1.0.
 
 Performance may vary based on the amount of threads and disk speeds. More threads doesn't always equal to higher speeds.
 

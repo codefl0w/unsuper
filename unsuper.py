@@ -19,7 +19,7 @@ import numpy as np
 import multiprocessing
 from multiprocessing import Pool, cpu_count
 
-VERSION = "2.0.2"
+VERSION = "2.1.0"
 
 # Constants
 SPARSE_HEADER_MAGIC = 0xED26FF3A
@@ -531,12 +531,18 @@ class FastExtractor:
 
 
 def _extract_partition_worker(input_file: str, output_dir: Path, partition: PartitionInfo) -> Tuple[str, float]:
-    """Worker function for multiprocessing - EXACT copy of original _extract_partition_static"""
+    # Worker function for multiprocessing 
     start_time = time.time()
     output_file = output_dir / f"{partition.name}.img"
     
     try:
         with open(input_file, 'rb') as infile, open(output_file, 'wb') as outfile:
+            try:
+                outfile.seek(partition.total_size - 1)
+                outfile.write(b'\0')
+                outfile.seek(0)
+            except (OSError, IOError):
+                pass
             # Use larger buffer and readinto for better performance
             buffer = bytearray(BUFFER_SIZE)
             file_size = os.path.getsize(input_file)
@@ -567,7 +573,6 @@ def _extract_partition_worker(input_file: str, output_dir: Path, partition: Part
 
 def extract_all_partitions(input_file: str, output_dir: Path, partitions: List[PartitionInfo], 
                           max_workers: int, show_progress: bool = True) -> None:
-    """Extract all partitions using multiprocessing - must be at module level"""
     
     if show_progress:
         print(f"Extracting {len(partitions)} partitions using {max_workers} threads...")

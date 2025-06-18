@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unsuper"
-version = "2.0.2"
+version = "2.1.0"
 description = "The fastest Android super.img dumper, made in Python."
 readme = "README.md"
 license = {text = "MIT"}
@@ -17,6 +17,7 @@ requires-python = ">=3.6"
 Homepage = "https://github.com/codefl0w/unsuper"
 Repository = "https://github.com/codefl0w/unsuper"
 Issues = "https://github.com/codefl0w/unsuper/issues"
+Donate = "https://coff.ee/fl0w"
 
 [project.scripts]
 unsuper = "unsuper:main"
