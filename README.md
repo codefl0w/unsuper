@@ -32,7 +32,7 @@ Simply run `pip install unsuper` to install the latest version globally.
 
 ## Executables
 
-If you don't want to install Python, simply download the latest executable binary for your operating system from the [releases page](https://github.com/codefl0w/unsuper/releases).
+If you don't want to install Python, simply download and use the latest executable binary for your operating system from the [releases page](https://github.com/codefl0w/unsuper/releases).
 
 # Speed
 unsuper can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.x extracts partitions up to 2.5x faster compared to V1.0.
