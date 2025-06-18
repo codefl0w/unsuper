@@ -3,8 +3,9 @@
 # unsuper
 The fastest Android super.img dumper, made in Python.
 
-![Version](https://img.shields.io/github/v/release/codefl0w/unsuper) ![Downloads](https://img.shields.io/github/downloads/codefl0w/unsuper/total) ![Executable Binary Builds](https://img.shields.io/github/actions/workflow/status/codefl0w/unsuper/build-multiplatform.yml)
-
+![GitHub Release](https://img.shields.io/github/v/release/codefl0w/unsuper?style=for-the-badge&color=ff8ff5&link=https%3A%2F%2Fgithub.com%2Fcodefl0w%2Funsuper)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/codefl0w/unsuper/total?style=for-the-badge)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/codefl0w/unsuper/build-multiplatform.yml?style=for-the-badge&label=Executable%20binary%20build%20status)
 
 
 ## Features
