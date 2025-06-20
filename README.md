@@ -1,10 +1,12 @@
 
 
+
 # unsuper
 The fastest Android super.img dumper, made in Python.
 
-![Version](https://img.shields.io/github/v/release/codefl0w/unsuper) ![Downloads](https://img.shields.io/github/downloads/codefl0w/unsuper/total) ![Executable Binary Builds](https://img.shields.io/github/actions/workflow/status/codefl0w/unsuper/build-multiplatform.yml)
-
+![GitHub Release](https://img.shields.io/github/v/release/codefl0w/unsuper?style=for-the-badge&color=ff8ff5&link=https%3A%2F%2Fgithub.com%2Fcodefl0w%2Funsuper)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/codefl0w/unsuper/total?style=for-the-badge)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/codefl0w/unsuper/build-multiplatform.yml?style=for-the-badge&label=Executable%20binary%20build%20status)
 
 
 ## Features
@@ -15,13 +17,23 @@ The fastest Android super.img dumper, made in Python.
 - **Selective usage** - unsuper can extract only specific partitions or just unsparse the image
 
 # Installation
+
+## Directly running the script
 Download the script, or clone into the repository if you want to contribute / fork.
 
 Download and install [Python](https://www.python.org/downloads/) (3.6 and later) and add it to PATH.
 
 Install the numpy module using `pip install numpy`.
 
-Follow [Usage](https://github.com/codefl0w/unsuper?tab=readme-ov-file#usage).
+Follow [Usage](https://github.com/codefl0w/unsuper?tab=readme-ov-file#usage). You'll need to type "python" before calling the script, the directions don't include that for simplicity.
+
+## Using pip
+
+Simply run `pip install unsuper` to install the latest version globally.
+
+## Executables
+
+If you don't want to install Python, simply download and use the latest executable binary for your operating system from the [releases page](https://github.com/codefl0w/unsuper/releases).
 
 # Speed
 unsuper can unsparse a 6.67GB super.img in only 11 seconds, and dump all available partitions in ~12 seconds on an average NVMe disk with the default of 4 threads. This puts the total extraction time to under 25 seconds, faster than any other competitor. This also means that V2.x extracts partitions up to 2.5x faster compared to V1.0.
@@ -48,6 +60,7 @@ unsuper's usage is extremely easy: just state the path to your super.img and sta
       --list                List available partitions and exit
       --temp-dir TEMP_DIR   Directory for temporary unsparse file (default: system temp directory)
       --unsparse            Unsparse image and save to output directory
+      --dump-metadata       Dump partition metadata to metadata.json in output directory
 
 For example, if you want to extract the system_a partition using 6 threads:
 
@@ -75,4 +88,3 @@ Enjoy my work? Please consider a small donation!
 <a href="https://buymeacoffee.com/fl0w" target="_blank" rel="noopener noreferrer">
   <img width="350" alt="yellow-button" src="https://github.com/user-attachments/assets/2e6d44c8-9640-4cb3-bcc8-989595d6b7e9"/>
 </a>
-

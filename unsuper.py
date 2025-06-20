@@ -18,8 +18,9 @@ import time
 import numpy as np
 import multiprocessing
 from multiprocessing import Pool, cpu_count
+import json
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # Constants
 SPARSE_HEADER_MAGIC = 0xED26FF3A
@@ -278,6 +279,7 @@ class FastMetadataParser:
                 return self._parse_with_mmap(mm, partition_names)
     
     def _parse_with_mmap(self, mm: mmap.mmap, partition_names: Optional[List[str]]) -> List[PartitionInfo]:
+        
         # Parse metadata using memory mapping with batch processing
         
         # Check minimum file size
@@ -451,8 +453,238 @@ class FastMetadataParser:
         
         return partitions
 
+    def dump_metadata_json(self, output_dir: str, partition_names: Optional[List[str]] = None) -> None:
+        # Dump metadata to JSON file in output directory
+        partitions = self.parse_partitions_for_metadata(partition_names)
+        
+        # Extract block size from geometry
+        with open(self.file_path, 'rb') as f:
+            f.seek(LP_PARTITION_RESERVED_BYTES + 32)  # Skip to logical_block_size field
+            geometry_data = f.read(12)
+            if len(geometry_data) >= 12:
+                logical_block_size = struct.unpack('<I', geometry_data[8:12])[0]
+            else:
+                logical_block_size = LP_SECTOR_SIZE  # Default fallback
+        
+        # Build JSON structure
+        metadata = {
+            "uses_unsuper": VERSION,
+            "unsparse_image_size": self.file_size,
+           
+            "block_size": logical_block_size,
+            "partitions": []
+        }
+        
+        for partition in partitions:
+            partition_data = {
+                "name": partition.name,
+                "size": partition.total_size,
+                "extents": []
+            }
+            
+            for extent in partition.extents:
+                extent_data = {
+                    "offset": extent.offset,
+                    "length": extent.size
+                }
+                partition_data["extents"].append(extent_data)
+            
+            metadata["partitions"].append(partition_data)
+        
+        # Create output directory and write JSON file
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        json_file = output_path / "metadata.json"
+        
+        with open(json_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+    
+    def parse_partitions_for_metadata(self, partition_names: Optional[List[str]] = None) -> List[PartitionInfo]:
+        # Parse partition metadata for JSON dump - includes partitions with zero extents
+        
+        with open(self.file_path, 'rb') as f:
+            # Use memory mapping for better performance on large files
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                return self._parse_with_mmap_for_metadata(mm, partition_names)
+    
+    def _parse_with_mmap_for_metadata(self, mm: mmap.mmap, partition_names: Optional[List[str]]) -> List[PartitionInfo]:
+        # Parse metadata using memory mapping
+        
+        # Check minimum file size
+        if len(mm) < LP_PARTITION_RESERVED_BYTES + 40:
+            raise FastDumperError("File too small to contain valid metadata")
+        
+        # Read geometry
+        mm.seek(LP_PARTITION_RESERVED_BYTES)
+        geometry_data = mm.read(44)  # Read enough for all geometry fields
+        if len(geometry_data) < 44:
+            raise FastDumperError("Cannot read geometry data")
+        
+        magic, struct_size = struct.unpack('<2I', geometry_data[:8])
+        
+        if magic != LP_METADATA_GEOMETRY_MAGIC:
+            raise FastDumperError(f"Invalid geometry magic: 0x{magic:08x}")
+        
+        metadata_max_size, metadata_slot_count, logical_block_size = struct.unpack(
+            '<3I', geometry_data[32:44]
+        )
+        
+        # Validate geometry values
+        if metadata_max_size == 0 or metadata_slot_count == 0:
+            raise FastDumperError("Invalid metadata geometry")
+        
+        # Calculate header offset
+        base_offset = LP_PARTITION_RESERVED_BYTES + (LP_METADATA_GEOMETRY_SIZE * 2)
+        header_offset = base_offset
+        
+        # Check if we have enough space for metadata
+        if header_offset + 128 > len(mm):
+            raise FastDumperError("File too small for metadata header")
+        
+        # Read metadata header
+        mm.seek(header_offset)
+        header_data = mm.read(128)  # Read enough for header + table descriptors
+        if len(header_data) < 128:
+            raise FastDumperError("Cannot read metadata header")
+        
+        magic = struct.unpack('<I', header_data[:4])[0]
+        if magic != LP_METADATA_HEADER_MAGIC:
+            # Try backup header
+            backup_offset = base_offset + metadata_max_size * metadata_slot_count
+            if backup_offset + 128 > len(mm):
+                raise FastDumperError("File too small for backup metadata header")
+            
+            mm.seek(backup_offset)
+            header_data = mm.read(128)
+            if len(header_data) < 128:
+                raise FastDumperError("Cannot read backup metadata header")
+            
+            magic = struct.unpack('<I', header_data[:4])[0]
+            if magic != LP_METADATA_HEADER_MAGIC:
+                raise FastDumperError(f"Invalid metadata header magic: 0x{magic:08x}")
+            header_offset = backup_offset
+        
+        # Parse header and table descriptors
+        header_size, tables_size = struct.unpack('<2I', header_data[8:16])
+        
+        if header_size < 80 or tables_size == 0:
+            raise FastDumperError("Invalid metadata header values")
+        
+        # Parse table descriptors (starting at offset 80 in header)
+        tables_start = header_offset + header_size
+        
+        # Check bounds for table descriptors
+        if len(header_data) < 104:
+            raise FastDumperError("Header too small for table descriptors")
+        
+        # Partition table descriptor
+        part_offset, part_count, part_entry_size = struct.unpack('<3I', header_data[80:92])
+        
+        # Extent table descriptor  
+        extent_offset, extent_count, extent_entry_size = struct.unpack('<3I', header_data[92:104])
+        
+        # Validate table parameters
+        if part_entry_size < 52 or extent_entry_size < 24:
+            raise FastDumperError("Invalid table entry sizes")
+        
+        # Check bounds for partition table
+        part_table_start = tables_start + part_offset
+        part_table_size = part_count * part_entry_size
+        if part_table_start + part_table_size > len(mm):
+            raise FastDumperError("Partition table extends beyond file")
+        
+        # Check bounds for extent table
+        extent_table_start = tables_start + extent_offset
+        extent_table_size = extent_count * extent_entry_size
+        if extent_table_start + extent_table_size > len(mm):
+            raise FastDumperError("Extent table extends beyond file")
+        
+        # Read partition table
+        mm.seek(part_table_start)
+        partitions_data = mm.read(part_table_size)
+        if len(partitions_data) < part_table_size:
+            raise FastDumperError("Cannot read complete partition table")
+        
+        # Read extent table
+        mm.seek(extent_table_start)
+        extents_data = mm.read(extent_table_size)
+        if len(extents_data) < extent_table_size:
+            raise FastDumperError("Cannot read complete extent table")
+        
+        # Batch unpack all partition entries at once
+        partitions = []
+        partition_fmt = '<36s3I'  # name(36) + attributes(4) + first_extent(4) + num_extents(4)
+        partition_struct_size = struct.calcsize(partition_fmt)
+        
+        # Calculate how many complete partition entries we can unpack
+        max_partitions = min(part_count, len(partitions_data) // partition_struct_size)
+        
+        # Unpack all partitions in batches
+        partition_structs = []
+        for i in range(max_partitions):
+            start_idx = i * part_entry_size
+            # Only unpack the fields we need
+            entry_data = partitions_data[start_idx:start_idx + partition_struct_size]
+            if len(entry_data) >= partition_struct_size:
+                partition_structs.append(struct.unpack(partition_fmt, entry_data))
+        
+        # Similarly for extents - batch unpack
+        extent_fmt = '<QIQ'  # num_sectors(8) + target_type(4) + target_data(8)
+        extent_struct_size = struct.calcsize(extent_fmt)
+        max_extents = min(extent_count, len(extents_data) // extent_struct_size)
+        
+        extent_structs = []
+        for i in range(max_extents):
+            start_idx = i * extent_entry_size
+            entry_data = extents_data[start_idx:start_idx + extent_struct_size]
+            if len(entry_data) >= extent_struct_size:
+                extent_structs.append(struct.unpack(extent_fmt, entry_data))
+        
+        # Process partitions with batch-loaded data - INCLUDE zero-extent partitions for metadata dump
+        for name_bytes, attributes, first_extent_idx, num_extents in partition_structs:
+            name = name_bytes.decode('utf-8').strip('\x00')
+            
+            if not name or (partition_names and name not in partition_names):
+                continue
+            
+            # Process extents for this partition (even if num_extents is 0)
+            extents = []
+            total_size = 0
+            
+            # Handle zero extents case - create partition with empty extents list
+            if num_extents == 0:
+                partitions.append(PartitionInfo(name, extents, total_size))
+                continue
+            
+            # Handle case where first_extent_idx is out of bounds
+            if first_extent_idx >= len(extent_structs):
+                partitions.append(PartitionInfo(name, extents, total_size))
+                continue
+            
+            for j in range(num_extents):
+                extent_idx = first_extent_idx + j
+                if extent_idx >= len(extent_structs):
+                    break
+                    
+                num_sectors, target_type, target_data = extent_structs[extent_idx]
+                
+                if target_type != LP_TARGET_TYPE_LINEAR:
+                    continue
+                
+                offset = target_data * LP_SECTOR_SIZE
+                size = num_sectors * LP_SECTOR_SIZE
+                
+                # Validate extent bounds
+                if offset + size <= len(mm) and size > 0:
+                    extents.append(ExtentInfo(offset, size))
+                    total_size += size
+            
+            # Always add partition to the list (even with no valid extents)
+            partitions.append(PartitionInfo(name, extents, total_size))
+        
+        return partitions      
+
 class FastExtractor:
-    # High-performance partition extractor - multiprocessing moved to module level
     
     def __init__(self, input_file: str, output_dir: str, max_workers: int = None):
         self.input_file = input_file
@@ -526,7 +758,7 @@ class FastExtractor:
                 remaining -= bytes_read
     
     def extract_all(self, partitions: List[PartitionInfo], show_progress: bool = True) -> None:
-        # Extract all partitions - delegate to module-level function for multiprocessing
+        # Extract all partitions
         extract_all_partitions(self.input_file, self.output_dir, partitions, self.max_workers, show_progress)
 
 
@@ -603,19 +835,18 @@ def extract_all_partitions(input_file: str, output_dir: Path, partitions: List[P
 def main():
 
     ascii = r"""
-                                       
+                                    
  /\ /\ _ __  ___ _   _ _ __   ___ _ __ 
 / / \ \ '_ \/ __| | | | '_ \ / _ \ '__|
 \ \_/ / | | \__ \ |_| | |_) |  __/ |   
  \___/|_| |_|___/\__,_| .__/ \___|_|   
-                      |_|              
-   Fastest super.img dumper ever
-         
+                      |_| 
+                  
      """
 
     parser = argparse.ArgumentParser(
         description=ascii,
-        usage="%(prog)s super_image [output_dir] [-h] [-p PARTITIONS [PARTITIONS ...]] [-j JOBS] [-q] [--list] [--temp-dir TEMP_DIR] [--version] [--unsparse]",
+        usage="%(prog)s super_image [output_dir] [-h] [-p PARTITIONS [PARTITIONS ...]] [-j JOBS] [-q] [--list] [--temp-dir TEMP_DIR] [--version] [--unsparse] [--dump-metadata]",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -671,6 +902,12 @@ def main():
         '--unsparse',
         action='store_true',
         help='Unsparse image and save to output directory'
+    )
+
+    parser.add_argument(
+        '--dump-metadata',
+        action='store_true',
+        help='Dump partition metadata to metadata.json in output directory'
     )
     
     args = parser.parse_args()
@@ -758,6 +995,19 @@ def main():
             print("Parsing metadata...")
         
         parser_obj = FastMetadataParser(input_file)
+        # Dump metadata if requested
+        if args.dump_metadata:
+            if not args.quiet:
+                print(f"Dumping metadata to: {args.output_dir}/metadata.json")
+            
+            parser_obj.dump_metadata_json(args.output_dir, args.partitions)
+            
+            if not args.quiet:
+                print("Metadata dump complete!")
+            
+            # If only dumping metadata (no extraction or listing), exit here
+            if not args.list and not args.partitions and not args.unsparse:
+                return        
         partitions = parser_obj.parse_partitions(args.partitions)
         
         if not partitions:
