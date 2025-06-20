@@ -59,6 +59,7 @@ unsuper's usage is extremely easy: just state the path to your super.img and sta
       --list                List available partitions and exit
       --temp-dir TEMP_DIR   Directory for temporary unsparse file (default: system temp directory)
       --unsparse            Unsparse image and save to output directory
+      --dump-metadata       Dump partition metadata to metadata.json in output directory
 
 For example, if you want to extract the system_a partition using 6 threads:
 
