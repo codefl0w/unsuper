@@ -28,7 +28,9 @@ Follow [Usage](https://github.com/codefl0w/unsuper?tab=readme-ov-file#usage). Yo
 
 ## Using pip
 
-Simply run `pip install unsuper` to install the latest version globally.
+Simply run `pip install unsuper` to install the latest version globally. 
+
+You'll also need to run `pip install numpy` as V2.0.0 and newer versions use Numpy for faster extraction. If this is not possible (e.g. on Termux), run `pip install unsuper==1.0` to download the first version instead.
 
 ## Executables
 
