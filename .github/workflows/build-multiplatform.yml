@@ -5,15 +5,18 @@ on:
     tags:
       - 'V*'
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -27,31 +30,25 @@ jobs:
           pyinstaller --onefile --hide-console hide-early unsuper.py
           mv dist/unsuper.exe dist/unsuper_windows.exe
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Create GitHub Release and Upload Windows binary
+        uses: softprops/action-gh-release@v2
         with:
+          files: dist/unsuper_windows.exe
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Upload Windows binary
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/unsuper_windows.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -66,17 +63,18 @@ jobs:
           mv dist/unsuper dist/unsuper_macos
 
       - name: Upload macOS binary
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/unsuper_macos
+          tag_name: ${{ github.ref_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-linux:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build Linux executable inside Docker (Ubuntu 20.04)
         run: |
@@ -90,8 +88,9 @@ jobs:
           "
 
       - name: Upload Linux binary
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/unsuper_linux
+          tag_name: ${{ github.ref_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
