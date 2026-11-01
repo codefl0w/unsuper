@@ -1,6 +1,24 @@
 # Changelog
 The changelog only includes what's new. To read feature descriptions, see [Features](https://github.com/codefl0w/unsuper?tab=readme-ov-file#features).
 
+# [3.0.1] - 02.11.2026
+
+### Fixed
+
+- Metadata Parser: Fix `LpMetadataGeometry` struct field offsets (`metadata_max_size`, `metadata_slot_count` at offset 40, `logical_block_size` at offset 48) and increase geometry read size to 52 bytes
+- Metadata Parser: Fix `LpMetadataHeader` struct `tables_size` offset (offset 44, correctly skipping the 32-byte header checksum)
+- Metadata Parser: Fix backup metadata offset calculation by using verified `metadata_max_size` and `metadata_slot_count`
+- Security: Add path traversal sanitization to prevent partition names from escaping the target output directory
+- Compatibility: Bump minimum Python requirement to `>=3.7` in package metadata
+
+### Improved
+
+- Extractor: Resilient multi-threaded extraction — failures on individual partitions no longer abort remaining partition extractions
+
+### Removed
+
+- CLI: Purged dead `--dump-metadata`, `--use-metadata`, and `--create-metadata` arguments along with JSON helper utilities and `json` module import
+
 # [3.0.0] - 01.11.2026
 
 ### Added

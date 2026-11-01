@@ -8,7 +8,6 @@ import argparse
 import bisect
 import concurrent.futures
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import shutil
@@ -18,7 +17,7 @@ import tempfile
 import time
 from typing import BinaryIO, Callable, Dict, List, Optional, Tuple, Union
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 
 # Constants
 SPARSE_HEADER_MAGIC = 0xED26FF3A
@@ -453,27 +452,23 @@ class FastMetadataParser:
             self.image = load_image_source(str(source))
         self.file_size = self.image.unsparse_size
 
-    def parse_partitions(self, partition_names: Optional[List[str]] = None) -> List[PartitionInfo]:
-        return self._parse_metadata(partition_names, include_empty=False)
-
-    def parse_partitions_for_metadata(self, partition_names: Optional[List[str]] = None) -> List[PartitionInfo]:
-        return self._parse_metadata(partition_names, include_empty=True)
-
-    def _parse_metadata(self, partition_names: Optional[List[str]] = None, include_empty: bool = False) -> List[PartitionInfo]:
+    def parse_partitions(self, partition_names: Optional[List[str]] = None, include_empty: bool = False) -> List[PartitionInfo]:
         total_size = self.image.unsparse_size
-        if total_size < LP_PARTITION_RESERVED_BYTES + 44:
+        if total_size < LP_PARTITION_RESERVED_BYTES + 52:
             raise FastDumperError("File too small to contain valid LP metadata")
 
-        # 1. Read Geometry
-        geom_bytes = self.image.read(LP_PARTITION_RESERVED_BYTES, 44)
-        if len(geom_bytes) < 44:
+        # 1. Read Geometry (LpMetadataGeometry is 52 bytes)
+        geom_bytes = self.image.read(LP_PARTITION_RESERVED_BYTES, 52)
+        if len(geom_bytes) < 52:
             raise FastDumperError("Cannot read LP geometry data")
 
-        magic, _ = struct.unpack_from('<2I', geom_bytes, 0)
+        magic, struct_size = struct.unpack_from('<2I', geom_bytes, 0)
         if magic != LP_METADATA_GEOMETRY_MAGIC:
             raise FastDumperError(f"Invalid geometry magic: 0x{magic:08x} (expected 0x{LP_METADATA_GEOMETRY_MAGIC:08x})")
 
-        metadata_max_size, metadata_slot_count, _ = struct.unpack_from('<3I', geom_bytes, 32)
+        # In LpMetadataGeometry: checksum is at offset 8 (32 bytes).
+        # metadata_max_size is at 40, metadata_slot_count is at 44, logical_block_size is at 48.
+        metadata_max_size, metadata_slot_count, _ = struct.unpack_from('<3I', geom_bytes, 40)
         if metadata_max_size == 0 or metadata_slot_count == 0:
             raise FastDumperError("Invalid metadata geometry: slot count or max size is 0")
 
@@ -490,7 +485,7 @@ class FastMetadataParser:
 
         magic = struct.unpack_from('<I', header_bytes, 0)[0]
         if magic != LP_METADATA_HEADER_MAGIC:
-            # Check backup slot
+            # Check backup slot using valid metadata_max_size * metadata_slot_count
             backup_offset = base_offset + (metadata_max_size * metadata_slot_count)
             if backup_offset + 128 > total_size:
                 raise FastDumperError("File too small for backup metadata header")
@@ -502,7 +497,10 @@ class FastMetadataParser:
                 raise FastDumperError(f"Invalid metadata header magic: 0x{magic:08x}")
             header_offset = backup_offset
 
-        header_size, tables_size = struct.unpack_from('<2I', header_bytes, 8)
+        # In LpMetadataHeader: header_size is at offset 8 (4 bytes),
+        # header_checksum is at offset 12 (32 bytes), tables_size is at offset 44 (4 bytes).
+        header_size = struct.unpack_from('<I', header_bytes, 8)[0]
+        tables_size = struct.unpack_from('<I', header_bytes, 44)[0]
         if header_size < 80 or tables_size == 0:
             raise FastDumperError("Invalid metadata header sizes")
 
@@ -550,6 +548,11 @@ class FastMetadataParser:
             if not name or (partition_names and name not in partition_names):
                 continue
 
+            # Guard against path traversal in partition names
+            if '/' in name or '\\' in name or name in ('.', '..') or name.startswith('.'):
+                print(f"Warning: Skipping partition with unsafe name: {name!r}")
+                continue
+
             extents: List[ExtentInfo] = []
             total_part_size = 0
 
@@ -583,85 +586,6 @@ class FastMetadataParser:
 
         return partitions
 
-    def dump_metadata_json(self, output_dir: str, partition_names: Optional[List[str]] = None) -> None:
-        partitions = self.parse_partitions_for_metadata(partition_names)
-
-        # Extract logical block size
-        geom_bytes = self.image.read(LP_PARTITION_RESERVED_BYTES, 44)
-        if len(geom_bytes) >= 44:
-            logical_block_size = struct.unpack_from('<I', geom_bytes, 40)[0]
-        else:
-            logical_block_size = LP_SECTOR_SIZE
-
-        metadata = {
-            "uses_unsuper": VERSION,
-            "unsparse_image_size": self.image.unsparse_size,
-            "block_size": logical_block_size,
-            "partitions": []
-        }
-
-        for p in partitions:
-            p_data = {
-                "name": p.name,
-                "size": p.total_size,
-                "extents": [{"offset": e.offset, "length": e.size} for e in p.extents]
-            }
-            metadata["partitions"].append(p_data)
-
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        json_file = output_path / "metadata.json"
-
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2)
-
-    @staticmethod
-    def create_metadata_from_images(image_paths: List[str], output_path: str,
-                                    base_metadata: Optional[dict] = None) -> None:
-        """Create metadata.json from individual partition images."""
-        if base_metadata:
-            metadata = base_metadata.copy()
-            metadata["uses_unsuper"] = VERSION
-        else:
-            metadata = {
-                "uses_unsuper": VERSION,
-                "unsparse_image_size": 0,
-                "block_size": LP_SECTOR_SIZE,
-                "partitions": []
-            }
-
-        metadata["partitions"] = []
-        total_size = 0
-        current_offset = LP_PARTITION_RESERVED_BYTES + (LP_METADATA_GEOMETRY_SIZE * 2)
-
-        for img_path in image_paths:
-            img_file = Path(img_path)
-            if not img_file.exists():
-                print(f"Warning: Image file {img_path} not found, skipping...")
-                continue
-
-            partition_name = img_file.stem
-            if partition_name.endswith('.img'):
-                partition_name = partition_name[:-4]
-
-            file_size = img_file.stat().st_size
-            total_size += file_size
-
-            metadata["partitions"].append({
-                "name": partition_name,
-                "size": file_size,
-                "extents": [{
-                    "offset": current_offset,
-                    "length": file_size
-                }]
-            })
-            current_offset += ((file_size + LP_SECTOR_SIZE - 1) // LP_SECTOR_SIZE) * LP_SECTOR_SIZE
-
-        metadata["unsparse_image_size"] = total_size
-
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2)
-
 
 def load_image_source(filepath: str) -> Union[SparseImage, RawImage]:
     """Inspect header magic and return appropriate SparseImage or RawImage instance."""
@@ -676,61 +600,6 @@ def load_image_source(filepath: str) -> Union[SparseImage, RawImage]:
     return RawImage(filepath)
 
 
-def load_metadata_file(metadata_path: str) -> dict:
-    """Load and validate metadata from JSON file."""
-    metadata_file = Path(metadata_path)
-    if not metadata_file.exists():
-        raise FastDumperError(f"Metadata file not found: {metadata_path}")
-
-    try:
-        with open(metadata_file, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-    except json.JSONDecodeError as e:
-        raise FastDumperError(f"Invalid JSON in metadata file: {e}")
-
-    for field in ["partitions", "block_size"]:
-        if field not in metadata:
-            raise FastDumperError(f"Missing required field in metadata: {field}")
-
-    if not isinstance(metadata["partitions"], list):
-        raise FastDumperError("Metadata partitions field must be a list")
-
-    return metadata
-
-
-def create_partitions_from_metadata(metadata: dict, partition_names: Optional[List[str]] = None) -> List[PartitionInfo]:
-    """Create PartitionInfo objects from loaded metadata dict."""
-    partitions = []
-    for partition_data in metadata["partitions"]:
-        if not isinstance(partition_data, dict):
-            continue
-
-        name = partition_data.get("name", "")
-        if not name or (partition_names and name not in partition_names):
-            continue
-
-        extents = []
-        total_size = 0
-        extent_list = partition_data.get("extents", [])
-        if isinstance(extent_list, list):
-            for extent_data in extent_list:
-                if not isinstance(extent_data, dict):
-                    continue
-                offset = extent_data.get("offset", 0)
-                length = extent_data.get("length", 0)
-                if offset >= 0 and length > 0:
-                    if extents and (extents[-1].offset + extents[-1].size == offset):
-                        extents[-1].size += length
-                    else:
-                        extents.append(ExtentInfo(offset, length))
-                    total_size += length
-
-        partition_size = partition_data.get("size", total_size)
-        partitions.append(PartitionInfo(name, extents, partition_size))
-
-    return partitions
-
-
 def _extract_single_partition(
     image: Union[SparseImage, RawImage],
     partition: PartitionInfo,
@@ -738,7 +607,19 @@ def _extract_single_partition(
 ) -> Tuple[str, float]:
     """Worker function for concurrent thread extraction."""
     start_time = time.perf_counter()
-    output_file = output_dir / f"{partition.name}.img"
+
+    # Guard against path traversal in partition names
+    safe_name = Path(partition.name).name
+    if not safe_name or safe_name != partition.name or safe_name in ('.', '..') or safe_name.startswith('.'):
+        raise FastDumperError(f"Unsafe partition name rejected: {partition.name!r}")
+
+    out_dir_resolved = output_dir.resolve()
+    output_file = (output_dir / f"{safe_name}.img").resolve()
+    try:
+        output_file.relative_to(out_dir_resolved)
+    except ValueError:
+        raise FastDumperError(f"Path traversal detected for partition {partition.name!r}")
+
     buf = bytearray(BUFFER_SIZE)
 
     try:
@@ -779,6 +660,7 @@ class FastExtractor:
             print(f"Extracting {len(partitions)} partitions using {self.max_workers} threads...")
 
         results = []
+        failures = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_partition = {
                 executor.submit(_extract_single_partition, self.image, p, self.output_dir): p
@@ -787,19 +669,30 @@ class FastExtractor:
 
             for i, future in enumerate(concurrent.futures.as_completed(future_to_partition), 1):
                 partition = future_to_partition[future]
-                name, elapsed = future.result()
-                results.append((name, elapsed))
+                try:
+                    name, elapsed = future.result()
+                    results.append((name, elapsed))
+                    if show_progress:
+                        size_mb = partition.total_size / (1024 * 1024)
+                        speed_mb = size_mb / elapsed if elapsed > 0 else 0
+                        print(f"[{i}/{len(partitions)}] {name}: {size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
+                except Exception as e:
+                    failures.append((partition.name, str(e)))
+                    if show_progress:
+                        print(f"[{i}/{len(partitions)}] {partition.name}: FAILED - {e}")
 
-                if show_progress:
-                    size_mb = partition.total_size / (1024 * 1024)
-                    speed_mb = size_mb / elapsed if elapsed > 0 else 0
-                    print(f"[{i}/{len(partitions)}] {name}: {size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
-
-        if show_progress and len(partitions) > 1:
+        if show_progress and len(partitions) > 1 and results:
             total_time = sum(elapsed for _, elapsed in results)
-            avg_time = total_time / len(partitions)
-            print(f"\nCompleted! Average extraction time: {avg_time:.2f}s per partition")
+            avg_time = total_time / len(results)
+            print(f"\nCompleted {len(results)}/{len(partitions)} partition(s)! Average time: {avg_time:.2f}s")
             print(f"Total cumulative extraction time: {total_time:.2f}s")
+
+        if failures:
+            if show_progress:
+                print(f"\nFailed to extract {len(failures)} partition(s):")
+                for name, err in failures:
+                    print(f"  - {name}: {err}")
+            raise FastDumperError(f"{len(failures)} partition(s) failed during extraction")
 
         return results
 
@@ -821,8 +714,6 @@ class OptimizedLpUnpack:
         log_callback: Optional[Callable[[str], None]] = None,
         list_only: bool = False,
         unsparse_only: bool = False,
-        dump_metadata: bool = False,
-        use_metadata: Optional[str] = None,
     ):
         self.super_image = str(super_image)
         self.output_dir = str(output_dir)
@@ -833,8 +724,6 @@ class OptimizedLpUnpack:
         self.log_callback = log_callback
         self.list_only = list_only
         self.unsparse_only = unsparse_only
-        self.dump_metadata = dump_metadata
-        self.use_metadata = use_metadata
 
     def log(self, message: str) -> None:
         if self.log_callback:
@@ -881,22 +770,9 @@ class OptimizedLpUnpack:
                     return 0
 
             # 2. Obtain Partitions
-            if self.use_metadata:
-                self.log(f"Loading partitions from metadata file: {self.use_metadata}")
-                metadata = load_metadata_file(self.use_metadata)
-                partitions = create_partitions_from_metadata(metadata, self.partitions)
-            else:
-                self.log("Parsing partition metadata...")
-                parser_obj = FastMetadataParser(image)
-
-                if self.dump_metadata:
-                    self.log(f"Dumping metadata to: {self.output_dir}/metadata.json")
-                    parser_obj.dump_metadata_json(self.output_dir, self.partitions)
-                    self.log("Metadata dump complete!")
-                    if not self.list_only and not self.partitions and not self.unsparse_only:
-                        return 0
-
-                partitions = parser_obj.parse_partitions(self.partitions)
+            self.log("Parsing partition metadata...")
+            parser_obj = FastMetadataParser(image)
+            partitions = parser_obj.parse_partitions(self.partitions)
 
             if not partitions:
                 if self.partitions:
@@ -922,6 +798,7 @@ class OptimizedLpUnpack:
             output_path.mkdir(parents=True, exist_ok=True)
 
             results = []
+            failures = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs) as executor:
                 future_to_partition = {
                     executor.submit(_extract_single_partition, image, p, output_path): p
@@ -930,17 +807,27 @@ class OptimizedLpUnpack:
 
                 for i, future in enumerate(concurrent.futures.as_completed(future_to_partition), 1):
                     partition = future_to_partition[future]
-                    name, elapsed = future.result()
-                    results.append((name, elapsed))
-                    size_mb = partition.total_size / (1024 * 1024)
-                    speed_mb = size_mb / elapsed if elapsed > 0 else 0
-                    self.log(f"[{i}/{len(partitions)}] {name}: {size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
+                    try:
+                        name, elapsed = future.result()
+                        results.append((name, elapsed))
+                        size_mb = partition.total_size / (1024 * 1024)
+                        speed_mb = size_mb / elapsed if elapsed > 0 else 0
+                        self.log(f"[{i}/{len(partitions)}] {name}: {size_mb:.1f}MB in {elapsed:.2f}s ({speed_mb:.1f}MB/s)")
+                    except Exception as e:
+                        failures.append((partition.name, str(e)))
+                        self.log(f"[{i}/{len(partitions)}] {partition.name}: FAILED - {e}")
 
-            if len(partitions) > 1:
+            if len(partitions) > 1 and results:
                 total_time = sum(elapsed for _, elapsed in results)
-                avg_time = total_time / len(partitions)
-                self.log(f"\nCompleted! Average extraction time: {avg_time:.2f}s per partition")
+                avg_time = total_time / len(results)
+                self.log(f"\nCompleted {len(results)}/{len(partitions)} partition(s)! Average extraction time: {avg_time:.2f}s")
                 self.log(f"Total cumulative extraction time: {total_time:.2f}s")
+
+            if failures:
+                self.log(f"\nFailed to extract {len(failures)} partition(s):")
+                for name, err in failures:
+                    self.log(f"  - {name}: {err}")
+                return 1
 
             self.log(f"\nExtraction complete! Files saved to: {self.output_dir}")
             return 0
@@ -987,7 +874,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=ascii_art,
-        usage="%(prog)s [super_image] [output_dir] [-h] [-p PARTITIONS [PARTITIONS ...]] [-j JOBS] [-q] [--list] [--temp-dir TEMP_DIR] [--version] [--unsparse] [--dump-metadata] [--create-metadata IMAGE [IMAGE ...]] [--use-metadata METADATA_FILE]",
+        usage="%(prog)s [super_image] [output_dir] [-h] [-p PARTITIONS [PARTITIONS ...]] [-j JOBS] [-q] [--list] [--temp-dir TEMP_DIR] [--version] [--unsparse]",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -1046,48 +933,7 @@ def main():
         help='Unsparse image and save to output directory'
     )
 
-    parser.add_argument(
-        '--dump-metadata',
-        action='store_true',
-        help='Dump partition metadata to metadata.json in output directory'
-    )
-
-    parser.add_argument(
-        '--create-metadata',
-        nargs='+',
-        metavar='IMAGE',
-        help='Create metadata.json from individual partition images'
-    )
-
-    parser.add_argument(
-        '--use-metadata',
-        metavar='METADATA_FILE',
-        help='Use existing metadata.json file for partition information'
-    )
-
     args = parser.parse_args()
-
-    # Handle --create-metadata flag separately
-    if args.create_metadata:
-        try:
-            if not args.quiet:
-                print(f"Creating metadata from {len(args.create_metadata)} partition images...")
-
-            output_dir = Path(args.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            metadata_path = output_dir / "metadata.json"
-
-            FastMetadataParser.create_metadata_from_images(args.create_metadata, str(metadata_path))
-
-            if not args.quiet:
-                print(f"Metadata file created: {metadata_path}")
-            sys.exit(0)
-        except FastDumperError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            sys.exit(1)
 
     if not args.super_image:
         print("Error: super_image is required")
@@ -1103,8 +949,6 @@ def main():
         temp_dir=args.temp_dir,
         list_only=args.list,
         unsparse_only=args.unsparse,
-        dump_metadata=args.dump_metadata,
-        use_metadata=args.use_metadata,
     )
 
     try:

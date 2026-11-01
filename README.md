@@ -11,7 +11,7 @@ The fastest Android super.img dumper, made in Python.
 - **Direct sparse streaming** - Streams partitions directly from sparse images without writing temporary unsparse files to disk
 - **Zero dependencies** - Built entirely with standard library Python, no external packages required
 - **Smart extraction** - Automatically skips empty partitions and merges contiguous extents
-- **Selective usage** - Extract specific partitions, inspect metadata, or unsparse the full image
+- **Selective usage** - Extract specific partitions, list partition layouts, or unsparse the full image
 
 # Installation
 
@@ -56,11 +56,6 @@ Extra arguments come AFTER the positional arguments.
       --list                List available partitions and exit
       --temp-dir TEMP_DIR   Directory for temporary unsparse file if --unsparse is used (default: system temp directory)
       --unsparse            Unsparse image and save to output directory
-      --dump-metadata       Dump partition metadata to metadata.json in output directory
-      --use-metadata METADATA_FILE
-                            Use existing metadata.json file for partition information
-      --create-metadata IMAGE [IMAGE ...]
-                            Create metadata.json from individual partition images
 
 For example, if you want to extract the system_a partition using 6 threads:
 
